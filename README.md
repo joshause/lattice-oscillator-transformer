@@ -1,5 +1,5 @@
-# Lattice-Dynamic Attention Transformer with Phase Coherence
-Lattice-dynamic transformer is a fusion of ideas from condensed matter physics, neuroscience, and machine learning that incorporates the collective dynamics of coupled oscillators into the transformer architecture.
+# Lattice Oscillator Transformer
+Lattice-dynamic transformer is a fusion of ideas from condensed matter physics, neuroscience, and machine learning that incorporates the collective dynamics of coupled oscillators and phase coherence into the transformer neural network architecture.
 
 ## Core Concept
 Instead of treating attention heads as independent computational units, they are organized into n-dimensional lattice structure where each attention head acts as a coupled oscillator with nearest-neighbor interactions, potrntially creating emergent collective behaviors that enhance the transformer's ability to capture long-range dependencies and hierarchical patterns.
