@@ -103,12 +103,20 @@ class LatticeAttentionHead(nn.Module):
         """Return (output, attn_weights)."""
         B, L, _ = query.shape
 
-        Q = self.W_q(query)
-        K = self.W_k(key)
-        V = self.W_v(value)
+        Q = self.W_q(query)  # (B, L, d_k)
+        K = self.W_k(key)    # (B, L, d_k)
+        V = self.W_v(value)  # (B, L, d_k)
 
-        # Standard scaled dot-product
-        scores = torch.einsum("bqd,bkd->bqk", Q, K) / self.scale
+        # Ensure Q, K, V are 3D - flatten any extra dimensions
+        if Q.dim() > 3:
+            Q = Q.view(B, L, -1)
+        if K.dim() > 3:
+            K = K.view(B, L, -1)
+        if V.dim() > 3:
+            V = V.view(B, L, -1)
+
+        # Standard scaled dot-product - use matmul instead of einsum for robustness
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale  # (B, L, L)
 
         # Kuramoto phase update
         if neighbour_phases.numel():
@@ -137,10 +145,15 @@ class LatticeAttentionHead(nn.Module):
 
         # Apply causal mask if provided
         if mask is not None:
+            # Handle different mask dimensions
+            if mask.dim() == 2:  # (L, L)
+                mask = mask.unsqueeze(0).expand(B, -1, -1)
+            elif mask.dim() == 3 and mask.size(0) == 1:  # (1, L, L)
+                mask = mask.expand(B, -1, -1)
             scores = scores.masked_fill(mask == 0, -1e4)
 
         # Compute attention weights
-        attn = F.softmax(scores, dim=-1)
+        attn = F.softmax(scores, dim=-1)  # (B, L, L)
         
         # Monitor attention entropy (measure of attention spread)
         if self.monitor_dynamics:
@@ -148,8 +161,8 @@ class LatticeAttentionHead(nn.Module):
                 entropy = -torch.sum(attn * torch.log(attn + 1e-8), dim=-1).mean().item()
                 self._attention_entropy_history.append(entropy)
 
-        # Apply attention to values
-        out = torch.einsum("bql,blk->bqk", attn, V)
+        # Apply attention to values - use matmul instead of einsum
+        out = torch.matmul(attn, V)  # (B, L, d_k)
         return out, attn.detach()
 
 # --------------------------------------------------------------------------- #
@@ -269,19 +282,30 @@ class LatticeMultiHeadAttention(nn.Module):
     ) -> Tuple[Tensor, List[Tensor]]:
         """Forward pass with optional lattice dynamics."""
         B, L, _ = query.shape
+        
+        # Ensure inputs are properly shaped
+        if query.dim() > 3:
+            query = query.view(B, L, -1)
+        if key.dim() > 3:
+            key = key.view(B, L, -1)
+        if value.dim() > 3:
+            value = value.view(B, L, -1)
+
+        # Prepare mask
         if mask is not None and mask.dim() == 2:
-            mask = mask.unsqueeze(1).unsqueeze(1)
+            mask = mask.unsqueeze(0)  # (1, L, L)
 
         # Fast path: use optimized SDPA when lattice dynamics disabled
         if not use_lattice_dynamics and self.use_sdpa and mask is None:
-            # Batch all QKV computations
-            q = query.new_empty(B, L, self.n_heads, self.d_k).transpose(1, 2)
-            k = v = q.clone()
+            # Reshape for multi-head attention: (B, n_heads, L, d_k)
+            q = torch.empty(B, self.n_heads, L, self.d_k, device=query.device, dtype=query.dtype)
+            k = torch.empty(B, self.n_heads, L, self.d_k, device=key.device, dtype=key.dtype)
+            v = torch.empty(B, self.n_heads, L, self.d_k, device=value.device, dtype=value.dtype)
             
             for h_idx, head in enumerate(self.heads):
-                q[:, h_idx] = head.W_q(query)
-                k[:, h_idx] = head.W_k(key)
-                v[:, h_idx] = head.W_v(value)
+                q[:, h_idx, :, :] = head.W_q(query)
+                k[:, h_idx, :, :] = head.W_k(key)
+                v[:, h_idx, :, :] = head.W_v(value)
             
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=None)
             out = out.transpose(1, 2).reshape(B, L, self.d_model)
@@ -295,8 +319,12 @@ class LatticeMultiHeadAttention(nn.Module):
             weights = self.neighbour_w[h_idx]
             valid_mask = idx >= 0
             
-            neighbor_phases = torch.stack([self.heads[i].phase for i in idx[valid_mask]])
-            neighbor_weights = weights[valid_mask]
+            if valid_mask.any():
+                neighbor_phases = torch.stack([self.heads[i].phase for i in idx[valid_mask]])
+                neighbor_weights = weights[valid_mask]
+            else:
+                neighbor_phases = torch.tensor([])
+                neighbor_weights = torch.tensor([])
             
             # Process through head with lattice coupling
             output, attn = head(query, key, value, neighbor_phases, neighbor_weights, mask)
