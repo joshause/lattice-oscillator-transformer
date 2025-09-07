@@ -60,5 +60,75 @@ coupling_force = Σ(distance_weights * sin(neighbor_phase - my_phase))
 
 **Adaptive Lattice Constants**: Each head learns optimal interaction distances, allowing the network to discover the right balance between local and global attention patterns.
 
+## Research Tooling
+
+🔬 **Comprehensive Monitoring**: Each head tracks phase history, coupling forces, attention entropy
+
+📊 **Multi-Level Visualization**: Lattice snapshots, synchronization evolution, training progress
+
+🎬 **Dynamic Animations**: Phase wave propagation through the lattice
+
+📈 **Advanced Training Procedures**: Adaptive regularization schedules
 
 
+### Comprehensive Analysis Tools
+
+#### Multi-Component Loss Functions
+- **Phase Regularization**: Balances synchronization vs diversity
+- **Spatial Coherence**: Encourages neighboring head coordination
+- **Adaptive Scheduling**: Evolves regularization strength during training
+
+#### Rich Visualizations
+- **Lattice State Snapshots**: Phase distributions with directional vectors
+- **Synchronization Evolution**: Kuramoto order parameter tracking
+- **Training Progress**: Multi-component loss analysis with smoothing
+
+#### Research Datasets
+- **Periodic Patterns**: Tests synchronization capabilities
+- **Hierarchical Patterns**: Tests spatial coherence
+- **Random Baseline**: Control condition
+
+### Research Capabilities
+
+#### Dynamics Monitoring
+Each attention head now tracks:
+- Phase evolution history
+- Coupling force magnitudes
+- Attention entropy (spread measure)
+- Neighbor interaction strength
+
+#### Global Metrics
+The model provides:
+- Multi-block synchronization analysis
+- Lattice state extraction for any timestep
+- Comprehensive training history
+
+#### Visualization Suite
+- Static lattice visualizations with phase vectors
+- Animated phase wave propagation
+- Training progress with multiple loss components
+- Synchronization order parameter evolution
+
+### 🚀 Usage Examples
+
+#### Research Mode
+```
+model.enable_research_mode()
+visualizer = LatticeVisualizer(model)
+trainer = LatticeTrainer(model, visualizer)
+
+# Train with full monitoring
+results = trainer.adaptive_training_schedule(dataloader, optimizer)
+
+# Analyze results
+fig1 = visualizer.plot_lattice_snapshot()
+fig2 = visualizer.plot_synchronization_evolution()
+anim = visualizer.create_phase_animation()
+```
+
+#### Production Mode
+```
+model.disable_research_mode()
+# Fast inference with SDPA fallback
+logits = model(input_ids, use_lattice_dynamics=False)
+```
