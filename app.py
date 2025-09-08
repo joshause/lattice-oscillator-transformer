@@ -317,43 +317,42 @@ class LatticeMultiHeadAttention(nn.Module):
             return self.out_proj(out), []
 
         # Full path with lattice dynamics
-        if use_lattice_dynamics:
-            
-            # build one (n_heads, max_neighbors) index mask
-            n_heads = len(self.heads)
-            max_nbr = self.neighbor_idx.size(1)         # 8
-            device = query.device
-            
-            # mask for valid neighbors (-1 → 0, else 1)
-            valid = (self.neighbor_idx >= 0).long()                                    # (n_heads, 8)
-            nbr_idx = self.neighbor_idx.clamp(min=0)                                   # (n_heads, 8)
-            
-            # gather all head phases once
-            all_phases = torch.stack([h.phase for h in self.heads])                     # (n_heads,)
-            
-            # (n_heads, 8) - phases of neighbors (invalid entries get dummy 0)
-            nbr_phases = all_phases[nbr_idx] * valid                                    # zero-out dummy
-            
-            # compute every coupling force in parallel
-            phase_diff = nbr_phases - all_phases.unsqueeze(1)                           # (n_heads, 8)
-            coupling_forces = (self.neighbor_w * torch.sin(phase_diff)).sum(dim=1)     # (n_heads,)
-            
-            # update each head phase (in-place, no grad)
-            with torch.no_grad():
-                new_phases = all_phases + 0.01 * (
-                    torch.stack([h.intrinsic_freq for h in self.heads]) + coupling_forces
-                )
-                for h_idx, head in enumerate(self.heads):
-                    head.phase.copy_(new_phases[h_idx].remainder(2 * math.pi))
-            
-            # attention forward (vectorised)
-            outs, attns = [], []
+        outs, attns = [], []
+        # build one (n_heads, max_neighbors) index mask
+        n_heads = len(self.heads)
+        max_nbr = self.neighbor_idx.size(1)         # 8
+        device = query.device
+        
+        # mask for valid neighbors (-1 → 0, else 1)
+        valid = (self.neighbor_idx >= 0).long()                                    # (n_heads, 8)
+        nbr_idx = self.neighbor_idx.clamp(min=0)                                   # (n_heads, 8)
+        
+        # gather all head phases once
+        all_phases = torch.stack([h.phase for h in self.heads])                     # (n_heads,)
+        
+        # (n_heads, 8) - phases of neighbors (invalid entries get dummy 0)
+        nbr_phases = all_phases[nbr_idx] * valid                                    # zero-out dummy
+        
+        # compute every coupling force in parallel
+        phase_diff = nbr_phases - all_phases.unsqueeze(1)                           # (n_heads, 8)
+        coupling_forces = (self.neighbor_w * torch.sin(phase_diff)).sum(dim=1)     # (n_heads,)
+        
+        # update each head phase (in-place, no grad)
+        with torch.no_grad():
+            new_phases = all_phases + 0.01 * (
+                torch.stack([h.intrinsic_freq for h in self.heads]) + coupling_forces
+            )
             for h_idx, head in enumerate(self.heads):
-                bias = 0.1 * torch.cos(head.phase)
-                # ... rest of head forward unchanged ...
-                out, attn = head(query, key, value, torch.tensor([]), torch.tensor([]), mask)
-                outs.append(out)
-                attns.append(attn)
+                head.phase.copy_(new_phases[h_idx].remainder(2 * math.pi))
+        
+        # attention forward (vectorised)
+        outs, attns = [], []
+        for h_idx, head in enumerate(self.heads):
+            bias = 0.1 * torch.cos(head.phase)
+            # ... rest of head forward unchanged ...
+            out, attn = head(query, key, value, torch.tensor([]), torch.tensor([]), mask)
+            outs.append(out)
+            attns.append(attn)
                 
         # Record attention maps for analysis
         if self.monitor_lattice and len(attns) > 0:
