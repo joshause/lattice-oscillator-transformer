@@ -133,7 +133,7 @@ class LatticeAttentionHead(nn.Module):
                 self._coupling_history.append(0.0)
 
         # Phase wrapping to prevent drift
-        self.phase = new_phase.remainder(2 * math.pi)
+        self.phase.copy_(new_phase.detach().remainder(2 * math.pi))
 
         # Record phase for monitoring
         if self.monitor_dynamics:
