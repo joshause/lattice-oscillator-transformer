@@ -1,4 +1,4 @@
-# Enhanced Lattic Oscillator Transformer
+# Lattice Oscillator Transformer
 # Combines production-ready architecture with comprehensive research tooling
 # Req: Python ≥ 3.8, PyTorch ≥ 2.0, matplotlib, seaborn
 
@@ -33,7 +33,7 @@ def _check_divisible(d_model: int, n_heads: int) -> None:
         raise ValueError(f"d_model ({d_model}) must be divisible by n_heads ({n_heads})")
 
 # --------------------------------------------------------------------------- #
-#  Enhanced Lattice Attention Head with Monitoring
+#  Lattice Attention Head with Monitoring
 # --------------------------------------------------------------------------- #
 class LatticeAttentionHead(nn.Module):
     """Single attention head with Kuramoto phase oscillator and monitoring capabilities."""
@@ -166,7 +166,7 @@ class LatticeAttentionHead(nn.Module):
         return out, attn.detach()
 
 # --------------------------------------------------------------------------- #
-#  Enhanced Multi-Head Attention with Research Features
+#  Multi-Head Attention with Research Features
 # --------------------------------------------------------------------------- #
 class LatticeMultiHeadAttention(nn.Module):
     """Multi-head attention with lattice organization and research monitoring."""
@@ -345,10 +345,10 @@ class LatticeMultiHeadAttention(nn.Module):
         return self.out_proj(multi_out), attns
 
 # --------------------------------------------------------------------------- #
-#  Enhanced Transformer Block
+#  Transformer Block
 # --------------------------------------------------------------------------- #
 class LatticeTransformerBlock(nn.Module):
-    """Transformer block with enhanced lattice attention and monitoring."""
+    """Transformer block with lattice attention and monitoring."""
 
     def __init__(
         self,
@@ -373,7 +373,7 @@ class LatticeTransformerBlock(nn.Module):
         return self.norm2(x + self.ff(x))
 
 # --------------------------------------------------------------------------- #
-#  Enhanced Lattice Transformer with Research Capabilities
+#  Lattice Transformer with Research Capabilities
 # --------------------------------------------------------------------------- #
 class LatticeTransformer(nn.Module):
     """
@@ -1038,10 +1038,10 @@ class LatticeTrainer:
         return fig
 
 # --------------------------------------------------------------------------- #
-#  Enhanced Dataset and Training Utilities
+#  Dataset and Training Utilities
 # --------------------------------------------------------------------------- #
 class SimpleSequenceDataset:
-    """Enhanced dataset with configurable patterns for testing lattice dynamics."""
+    """Dataset with configurable patterns for testing lattice dynamics."""
     
     def __init__(self, vocab_size: int, seq_len: int, n_samples: int = 1000, pattern_type: str = 'periodic'):
         self.seq_len = seq_len
@@ -1095,15 +1095,15 @@ def create_dataloader(dataset, batch_size: int = 32):
 #  Comprehensive Demo and Testing
 # --------------------------------------------------------------------------- #
 def run_comprehensive_demo():
-    """Run comprehensive demonstration of enhanced lattice transformer."""
+    """Run comprehensive demonstration of lattice transformer."""
     print("=" * 80)
-    print("Enhanced Lattice-Dynamic Transformer Demo")
+    print("Lattice Oscillator Transformer Demo")
     print("=" * 80)
     
     # Model configuration
     config = {
         'vocab_size': 100,
-        'd_model': 128,
+        'd_model': 132,
         'n_heads': 6,  # 2x3 lattice
         'n_layers': 2,
         'd_ff': 512,
@@ -1116,7 +1116,7 @@ def run_comprehensive_demo():
         print(f"  {key}: {value}")
     
     # Create model and enable research mode
-    print(f"\n1. Creating Enhanced Lattice Transformer...")
+    print(f"\n1. Creating Lattice Oscillator Transformer...")
     model = LatticeTransformer(**config)
     model.enable_research_mode()
     
@@ -1232,7 +1232,7 @@ def run_comprehensive_demo():
     print(f"\n" + "=" * 80)
     print(f"DEMO COMPLETE")
     print(f"=" * 80)
-    print(f"✅ Enhanced Lattice Transformer successfully demonstrated")
+    print(f"✅ Lattice Oscillator Transformer successfully demonstrated")
     print(f"✅ Production-ready architecture with research tooling")
     print(f"✅ Lattice dynamics with performance optimization")
     print(f"✅ Comprehensive monitoring and visualization")
@@ -1254,7 +1254,7 @@ if __name__ == "__main__":
     # Quick functionality test
     print("Running quick sanity check...")
     
-    model = LatticeTransformer(vocab_size=100, d_model=64, n_heads=6, n_layers=2, d_ff=256)
+    model = LatticeTransformer(vocab_size=100, d_model=66, n_heads=6, n_layers=2, d_ff=256)
     x = torch.randint(0, 100, (4, 20))
     
     # Test both modes
