@@ -133,7 +133,10 @@ class LatticeAttentionHead(nn.Module):
                 self._coupling_history.append(0.0)
 
         # Phase wrapping to prevent drift
-        self.phase.copy_(new_phase.detach().remainder(2 * math.pi))
+        # straight-through: copy detached value, but keep grad on coupling_strength
+        with torch.no_grad():
+            self.phase.copy_(new_phase.remainder(2 * math.pi))
+            # coupling_strength still receives grad via the *compute* path above
 
         # Record phase for monitoring
         if self.monitor_dynamics:
@@ -228,6 +231,8 @@ class LatticeMultiHeadAttention(nn.Module):
         n = len(self.heads)
         self.register_buffer("neighbour_idx", torch.full((n, 8), -1, dtype=torch.long))
         self.register_buffer("neighbour_w", torch.zeros((n, 8)))
+        self.register_buffer("neighbour_idx_half",
+                     self.neighbour_idx.half().to(torch.int16))
 
         for i, (r1, c1) in enumerate(self.positions):
             k = 0
@@ -312,26 +317,44 @@ class LatticeMultiHeadAttention(nn.Module):
             return self.out_proj(out), []
 
         # Full path with lattice dynamics
-        outs, attns = [], []
-        for h_idx, head in enumerate(self.heads):
-            # Get neighbor information
-            idx = self.neighbour_idx[h_idx]
-            weights = self.neighbour_w[h_idx]
-            valid_mask = idx >= 0
+        if use_lattice_dynamics and neighbour_phases.numel():
             
-            if valid_mask.any():
-                neighbor_phases = torch.stack([self.heads[i].phase for i in idx[valid_mask]])
-                neighbor_weights = weights[valid_mask]
-            else:
-                device = query.device
-                neighbor_phases = torch.tensor([], device=device)
-                neighbor_weights = torch.tensor([], device=device)
+            # build one (n_heads, max_neighbours) index mask
+            n_heads = len(self.heads)
+            max_nbr = self.neighbour_idx.size(1)         # 8
+            device = query.device
             
-            # Process through head with lattice coupling
-            output, attn = head(query, key, value, neighbor_phases, neighbor_weights, mask)
-            outs.append(output)
-            attns.append(attn)
-
+            # mask for valid neighbours (-1 → 0, else 1)
+            valid = (self.neighbour_idx >= 0).long()                                    # (n_heads, 8)
+            nbr_idx = self.neighbour_idx.clamp(min=0)                                   # (n_heads, 8)
+            
+            # gather all head phases once
+            all_phases = torch.stack([h.phase for h in self.heads])                     # (n_heads,)
+            
+            # (n_heads, 8) - phases of neighbours (invalid entries get dummy 0)
+            nbr_phases = all_phases[nbr_idx] * valid                                    # zero-out dummy
+            
+            # compute every coupling force in parallel
+            phase_diff = nbr_phases - all_phases.unsqueeze(1)                           # (n_heads, 8)
+            coupling_forces = (self.neighbour_w * torch.sin(phase_diff)).sum(dim=1)     # (n_heads,)
+            
+            # update each head phase (in-place, no grad)
+            with torch.no_grad():
+                new_phases = all_phases + 0.01 * (
+                    torch.stack([h.intrinsic_freq for h in self.heads]) + coupling_forces
+                )
+                for h_idx, head in enumerate(self.heads):
+                    head.phase.copy_(new_phases[h_idx].remainder(2 * math.pi))
+            
+            # attention forward (vectorised)
+            outs, attns = [], []
+            for h_idx, head in enumerate(self.heads):
+                bias = 0.1 * torch.cos(head.phase)
+                # ... rest of head forward unchanged ...
+                out, attn = head(query, key, value, torch.tensor([]), torch.tensor([]), mask)
+                outs.append(out)
+                attns.append(attn)
+                
         # Record attention maps for analysis
         if self.monitor_lattice and len(attns) > 0:
             stacked_attns = torch.stack(attns, dim=1)  # (B, n_heads, L, L)
@@ -453,6 +476,8 @@ class LatticeTransformer(nn.Module):
         return_dict: bool = False,
         use_lattice_dynamics: bool = True,
     ):
+        
+                
         """
         Forward pass with optional lattice dynamics.
         
@@ -463,6 +488,7 @@ class LatticeTransformer(nn.Module):
             return_dict: Whether to return dictionary
             use_lattice_dynamics: Whether to use lattice coupling (vs standard attention)
         """
+        
         B, L = input_ids.shape
         device = input_ids.device
 
@@ -513,6 +539,17 @@ class LatticeVisualizer:
                 "Install: pip install matplotlib seaborn"
             )
 
+    # used in exit criterion test script
+    # expect π-phase flip across white line
+    # clear π-phase slip + test exact-match ≥ 98 % = lattice doing useful work
+    def plot_delimiter_wave(self, step_delim, block_idx=0):
+        states = [s for s in self.state_history if s['step'] >= step_delim-10
+                                               and s['step'] <= step_delim+10]
+        phases = np.stack([s['lattice_states'][block_idx]['phases'] for s in states])
+        plt.imshow(phases, aspect='auto', cmap='hsv', vmin=0, vmax=2*np.pi)
+        plt.axhline(10, color='white', lw=2)   # delimiter row
+        plt.title('Phase wave around delimiter')
+    
     def record_state(self, training_step: int = None):
         """Record current model state for later analysis."""
         if not self.model.research_mode:
@@ -793,6 +830,18 @@ class LatticeTrainer:
         
         # Total loss
         total_loss = ce_loss + phase_reg_loss + spatial_coherence_loss
+
+        # Ablation measurement
+        with torch.no_grad():
+            logits_ablate, _ = self.model(input_ids, labels=labels,
+                                          use_lattice_dynamics=False,
+                                          return_dict=False)
+            ce_ablate = F.cross_entropy(
+                logits_ablate[..., :-1, :].contiguous().view(-1, logits_ablate.size(-1)),
+                shift_labels.view(-1), ignore_index=-100)
+            metrics['ce_ablate'] = ce_ablate.item()
+        if verbose and batch_idx % 10 == 0:
+            print(f"  lattice gain = {metrics['ce_loss'] - metrics['ce_ablate']:.4f} nats")
         
         # Backward pass
         total_loss.backward()
@@ -891,32 +940,26 @@ class LatticeTrainer:
         epoch_results = []
         
         for epoch in range(n_epochs):
+
             if verbose:
                 print(f"\n=== Epoch {epoch + 1}/{n_epochs} ===")
+
+            #  step-level progress instead of epoch-level, giving a smoother ramp
+            # and guaranteeing the first 20% of all updates have zero sync pressure
             
-            # Adaptive regularization schedule
-            if epoch < warmup_epochs:
-                # Warmup phase: minimal lattice regularization
-                lambda_sync = 0.001
-                lambda_diversity = 0.001
-                lambda_coherence = 0.0001
-                if verbose:
-                    print("Phase: Warmup (minimal lattice regularization)")
-            elif epoch < n_epochs - 2:
-                # Main training: progressive lattice regularization
-                progress = (epoch - warmup_epochs) / (n_epochs - warmup_epochs - 2)
-                lambda_sync = 0.001 + progress * 0.009  # 0.001 -> 0.01
-                lambda_diversity = 0.001 + progress * 0.009
-                lambda_coherence = 0.0001 + progress * 0.0049  # 0.0001 -> 0.005
-                if verbose:
-                    print(f"Phase: Progressive training (λ_sync={lambda_sync:.4f})")
-            else:
-                # Fine-tuning: full regularization
-                lambda_sync = 0.01
-                lambda_diversity = 0.01
+            total_steps = len(dataloader) * n_epochs
+            current_step = epoch * len(dataloader) + 1   # +1 to avoid 0-div
+            progress = current_step / total_steps
+            
+            if progress < 0.2:                           # silent phase
+                lambda_sync = lambda_diversity = lambda_coherence = 0.0
+            elif progress < 0.8:                         # ramp
+                lambda_sync = 0.05 * (progress - 0.2) / 0.6
+                lambda_diversity = lambda_sync
+                lambda_coherence = 0.005 * lambda_sync   # keep ratio
+            else:                                        # plateau
+                lambda_sync = lambda_diversity = 0.05
                 lambda_coherence = 0.005
-                if verbose:
-                    print("Phase: Fine-tuning (full regularization)")
             
             # Train epoch
             epoch_metrics = self.train_epoch(
@@ -1246,6 +1289,24 @@ def run_comprehensive_demo():
     print(f"  • Use trainer.adaptive_training_schedule() for best results")
     
     return model, visualizer, trainer
+
+# --------------------------------------------------------------------------- #
+#  File block for exit criterion testing script
+# --------------------------------------------------------------------------- #
+class CopyReverseDataset:
+    def __init__(self, vocab_size=1000, seq_len=128, n_samples=5000):
+        self.seq_len = seq_len
+        self.data = []
+        half = seq_len // 2
+        for _ in range(n_samples):
+            prefix = torch.randint(3, vocab_size, (half,))
+            suffix = prefix.flip(0)
+            seq  = torch.cat([prefix, torch.tensor([2]), suffix])   # 2 = delimiter
+            tgt  = torch.cat([seq[1:], torch.tensor([0])])
+            self.data.append((seq, tgt))
+
+    def __len__(self): return len(self.data)
+    def __getitem__(self, idx): return self.data[idx]
 
 # --------------------------------------------------------------------------- #
 #  Quick Sanity Check
