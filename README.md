@@ -113,22 +113,10 @@ The model provides:
 
 #### Research Mode
 ```
-model.enable_research_mode()
-visualizer = LatticeVisualizer(model)
-trainer = LatticeTrainer(model, visualizer)
-
-# Train with full monitoring
-results = trainer.adaptive_training_schedule(dataloader, optimizer)
-
-# Analyze results
-fig1 = visualizer.plot_lattice_snapshot()
-fig2 = visualizer.plot_synchronization_evolution()
-anim = visualizer.create_phase_animation()
+TBD
 ```
 
 #### Production Mode
 ```
-model.disable_research_mode()
-# Fast inference with SDPA fallback
-logits = model(input_ids, use_lattice_dynamics=False)
+TBD
 ```
