@@ -298,9 +298,9 @@ class LatticeMultiHeadAttention(nn.Module):
         # Fast path: use optimized SDPA when lattice dynamics disabled
         if not use_lattice_dynamics and self.use_sdpa and mask is None:
             # Reshape for multi-head attention: (B, n_heads, L, d_k)
-            q = torch.empty(B, self.n_heads, L, self.d_k, device=query.device, dtype=query.dtype)
-            k = torch.empty(B, self.n_heads, L, self.d_k, device=key.device, dtype=key.dtype)
-            v = torch.empty(B, self.n_heads, L, self.d_k, device=value.device, dtype=value.dtype)
+            q = torch.zeros_like(q)
+            k = torch.zeros_like(k)
+            v = torch.zeros_like(v)
             
             for h_idx, head in enumerate(self.heads):
                 q[:, h_idx, :, :] = head.W_q(query)
@@ -323,8 +323,9 @@ class LatticeMultiHeadAttention(nn.Module):
                 neighbor_phases = torch.stack([self.heads[i].phase for i in idx[valid_mask]])
                 neighbor_weights = weights[valid_mask]
             else:
-                neighbor_phases = torch.tensor([])
-                neighbor_weights = torch.tensor([])
+                device = query.device
+                neighbor_phases = torch.tensor([], device=device)
+                neighbor_weights = torch.tensor([], device=device)
             
             # Process through head with lattice coupling
             output, attn = head(query, key, value, neighbor_phases, neighbor_weights, mask)
@@ -487,7 +488,7 @@ class LatticeTransformer(nn.Module):
             loss = F.cross_entropy(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1),
-                ignore_index=self.pad_token_id,
+                ignore_index=-100,
             )
 
         if return_dict:
@@ -507,7 +508,10 @@ class LatticeVisualizer:
         self.loss_history = []
         
         if not VISUALIZATION_AVAILABLE:
-            print("Warning: Visualization not available. Install matplotlib and seaborn.")
+            raise RuntimeError(
+                "Visualization requested but matplotlib/seaborn not found. "
+                "Install: pip install matplotlib seaborn"
+            )
 
     def record_state(self, training_step: int = None):
         """Record current model state for later analysis."""
@@ -728,11 +732,13 @@ class LatticeTrainer:
             # Diversity loss (encourage frequency diversity)
             freq_var = torch.var(frequencies)
             diversity_loss = torch.exp(-freq_var)  # Encourage diversity
-            
+
             total_sync_loss += sync_loss
             total_diversity_loss += diversity_loss
             n_blocks += 1
-        
+
+        if n_blocks == 0:
+            return torch.tensor(0.0, device=next(self.model.parameters()).device)
         total_sync_loss /= n_blocks
         total_diversity_loss /= n_blocks
         
@@ -1063,6 +1069,7 @@ class SimpleSequenceDataset:
             
             # Target is next token prediction
             target = torch.cat([seq[1:], torch.tensor([0])])
+            target[target == 0] = -100   # aligns with CrossEntropy(ignore_index=-100)
             self.data.append((seq, target))
     
     def __len__(self):
@@ -1145,7 +1152,7 @@ def run_comprehensive_demo():
     # Quick training run
     n_epochs = 3
     epoch_results = trainer.adaptive_training_schedule(
-        dataloader[:10],  # Subset for demo
+        dataloader[:min(10, len(dataloader))],  # Subset for demo
         optimizer, 
         n_epochs=n_epochs,
         warmup_epochs=1,
