@@ -96,8 +96,8 @@ class LatticeAttentionHead(nn.Module):
         query: Tensor,
         key: Tensor,
         value: Tensor,
-        neighbour_phases: Tensor,
-        neighbour_weights: Tensor,
+        neighbor_phases: Tensor,
+        neighbor_weights: Tensor,
         mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """Return (output, attn_weights)."""
@@ -119,9 +119,9 @@ class LatticeAttentionHead(nn.Module):
         scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale  # (B, L, L)
 
         # Kuramoto phase update
-        if neighbour_phases.numel():
-            phase_diff = neighbour_phases - self.phase
-            coupling_force = (neighbour_weights * torch.sin(phase_diff)).sum()
+        if neighbor_phases.numel():
+            phase_diff = neighbor_phases - self.phase
+            coupling_force = (neighbor_weights * torch.sin(phase_diff)).sum()
             new_phase = self.phase + 0.01 * (self.intrinsic_freq + self.coupling_strength * coupling_force)
             
             # Record coupling strength for monitoring
@@ -204,7 +204,7 @@ class LatticeMultiHeadAttention(nn.Module):
             self.heads.append(head)
 
         # Pre-compute static neighbor topology
-        self._build_neighbours()
+        self._build_neighbors()
         self.out_proj = nn.Linear(d_model, d_model)
 
         # Research monitoring state
@@ -226,13 +226,13 @@ class LatticeMultiHeadAttention(nn.Module):
         for head in self.heads:
             head.disable_monitoring()
 
-    def _build_neighbours(self) -> None:
+    def _build_neighbors(self) -> None:
         """Pre-compute neighbor topology for efficiency."""
         n = len(self.heads)
-        self.register_buffer("neighbour_idx", torch.full((n, 8), -1, dtype=torch.long))
-        self.register_buffer("neighbour_w", torch.zeros((n, 8)))
-        self.register_buffer("neighbour_idx_half",
-                     self.neighbour_idx.half().to(torch.int16))
+        self.register_buffer("neighbor_idx", torch.full((n, 8), -1, dtype=torch.long))
+        self.register_buffer("neighbor_w", torch.zeros((n, 8)))
+        self.register_buffer("neighbor_idx_half",
+                     self.neighbor_idx.half().to(torch.int16))
 
         for i, (r1, c1) in enumerate(self.positions):
             k = 0
@@ -246,8 +246,8 @@ class LatticeMultiHeadAttention(nn.Module):
                     for j, (r, c) in enumerate(self.positions):
                         if (r, c) == (r2, c2):
                             dist = math.hypot(dr, dc)
-                            self.neighbour_idx[i, k] = j
-                            self.neighbour_w[i, k] = math.exp(-dist)
+                            self.neighbor_idx[i, k] = j
+                            self.neighbor_w[i, k] = math.exp(-dist)
                             k += 1
                             break
 
@@ -317,26 +317,26 @@ class LatticeMultiHeadAttention(nn.Module):
             return self.out_proj(out), []
 
         # Full path with lattice dynamics
-        if use_lattice_dynamics and neighbour_phases.numel():
+        if use_lattice_dynamics:
             
-            # build one (n_heads, max_neighbours) index mask
+            # build one (n_heads, max_neighbors) index mask
             n_heads = len(self.heads)
-            max_nbr = self.neighbour_idx.size(1)         # 8
+            max_nbr = self.neighbor_idx.size(1)         # 8
             device = query.device
             
-            # mask for valid neighbours (-1 → 0, else 1)
-            valid = (self.neighbour_idx >= 0).long()                                    # (n_heads, 8)
-            nbr_idx = self.neighbour_idx.clamp(min=0)                                   # (n_heads, 8)
+            # mask for valid neighbors (-1 → 0, else 1)
+            valid = (self.neighbor_idx >= 0).long()                                    # (n_heads, 8)
+            nbr_idx = self.neighbor_idx.clamp(min=0)                                   # (n_heads, 8)
             
             # gather all head phases once
             all_phases = torch.stack([h.phase for h in self.heads])                     # (n_heads,)
             
-            # (n_heads, 8) - phases of neighbours (invalid entries get dummy 0)
+            # (n_heads, 8) - phases of neighbors (invalid entries get dummy 0)
             nbr_phases = all_phases[nbr_idx] * valid                                    # zero-out dummy
             
             # compute every coupling force in parallel
             phase_diff = nbr_phases - all_phases.unsqueeze(1)                           # (n_heads, 8)
-            coupling_forces = (self.neighbour_w * torch.sin(phase_diff)).sum(dim=1)     # (n_heads,)
+            coupling_forces = (self.neighbor_w * torch.sin(phase_diff)).sum(dim=1)     # (n_heads,)
             
             # update each head phase (in-place, no grad)
             with torch.no_grad():
@@ -794,8 +794,8 @@ class LatticeTrainer:
                 pos_i = positions[i]
                 
                 # Get neighbor indices for this head
-                neighbor_indices = lattice_attn.neighbour_idx[i]
-                neighbor_weights = lattice_attn.neighbour_w[i]
+                neighbor_indices = lattice_attn.neighbor_idx[i]
+                neighbor_weights = lattice_attn.neighbor_w[i]
                 valid_neighbors = neighbor_indices >= 0
                 
                 if valid_neighbors.any():
