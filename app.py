@@ -1,18 +1,6 @@
 # --------------------------------------------------------------------------- #
 #  Lattice Oscillator Transformer
 # --------------------------------------------------------------------------- #
-#  Changes w.r.t. last version
-#  • Fixed all tensor-shape mismatches in LatticeMultiHeadAttention forward
-#  • Added missing ‘shift_labels’ variable in LatticeTrainer.train_step
-#  • Wrapped scalar losses in torch.tensor(..., device=...) to avoid device errors
-#  • Added proper padding mask support (attention ignores pad_token_id)
-#  • Protected all division-by-zero paths (empty batches, zero-length sequences)
-#  • Added torch.no_grad() guards where .copy_ was used to silence warnings
-#  • Made visualiser optional in LatticeTrainer so demos run head-less
-#  • Added deterministic seed helper for reproducible research
-#  • Added __repr__ for major classes (optional, helps debugging)
-#  • Harmonised dtype/device handling throughout the codebase
-# --------------------------------------------------------------------------- #
 
 import math, time, random, warnings
 from typing import Dict, List, Optional, Tuple
@@ -23,7 +11,7 @@ import numpy as np
 # Optional visualisation back-end -------------------------------------------------
 try:
     import matplotlib.pyplot as plt, seaborn as sns
-    from matplotlib.animation import FuncAnimation
+    from matplotlib.animation import FuncAnimation, PillowWriter 
     VISUALIZATION_AVAILABLE = True
 except ImportError:
     VISUALIZATION_AVAILABLE = False
@@ -261,7 +249,6 @@ class LatticeMultiHeadAttention(nn.Module):
 
         # Full lattice path
         device = query.device
-        n_heads = len(self.heads)
         valid = (self.neighbor_idx >= 0).long()
         nbr_idx = self.neighbor_idx.clamp(min=0)
         all_phases = torch.stack([h.phase for h in self.heads])
@@ -278,7 +265,6 @@ class LatticeMultiHeadAttention(nn.Module):
 
         outs, attns = [], []
         for head in self.heads:
-            bias = 0.1 * torch.cos(head.phase)
             out, attn = head(query, key, value,
                              torch.tensor([], device=device),
                              torch.tensor([], device=device), mask)
@@ -493,7 +479,7 @@ class LatticeVisualizer:
         """Plot evolution of synchronization across training."""
         if not VISUALIZATION_AVAILABLE or not self.state_history:
             return None
-            
+        
         fig, axes = plt.subplots(2, 2, figsize=figsize)
         
         # Extract time series
@@ -541,9 +527,9 @@ class LatticeVisualizer:
             axes[1, 0].legend()
         
         # Plot loss history if available
-        if self.loss_history:
+        if self.loss_history and len(self.loss_history) > 1:
             loss_steps = [entry['step'] for entry in self.loss_history]
-            losses = [entry['loss'] for entry in self.loss_history]
+            losses     = [entry['total_loss'] for entry in self.loss_history]
             axes[1, 1].plot(loss_steps, losses, 'b-', linewidth=2)
             axes[1, 1].set_title('Training Loss')
             axes[1, 1].set_xlabel('Training Step')
@@ -595,6 +581,17 @@ class LatticeVisualizer:
         anim = FuncAnimation(fig, animate, frames=len(self.state_history),
                            interval=interval, repeat=True)
         return anim
+
+    # used in delimiter task demo
+    # plots phases of all heads over time with delimiter step marked
+    def plot_delimiter_wave(self, step_delim, block_idx=0):
+        states = [s for s in self.state_history if s['step'] >= step_delim-10
+                                            and s['step'] <= step_delim+10]
+        phases = np.stack([s['lattice_states'][block_idx]['phases'] for s in states])
+        plt.imshow(phases, aspect='auto', cmap='hsv', vmin=0, vmax=2*np.pi)
+        plt.axhline(10, color='white', lw=2)   # delimiter row
+        plt.title('Phase wave around delimiter')
+        plt.show()
 
 # --------------------------------------------------------------------------- #
 #  Trainer
@@ -661,13 +658,12 @@ class LatticeTrainer:
     ) -> Dict[str, float]:
         optimizer.zero_grad()
 
-        logits, ce_loss = self.model(input_ids, labels=labels, use_lattice_dynamics=use_lattice_dynamics)
+        _, ce_loss = self.model(input_ids, labels=labels, use_lattice_dynamics=use_lattice_dynamics) 
         phase_reg = self.phase_regularization_loss(lambda_sync, lambda_diversity)
         spatial = self.spatial_coherence_loss(lambda_coherence)
         total = ce_loss + phase_reg + spatial
 
         # Ablation measurement
-        device = input_ids.device
         shift_labels = labels[..., 1:].contiguous()
         with torch.no_grad():
             logits_ablate, _ = self.model(input_ids, labels=labels, use_lattice_dynamics=False)
@@ -776,10 +772,94 @@ class LatticeTrainer:
 
     # Plotting ----------------------------------------------------------------------
     def plot_training_progress(self, figsize: Tuple[int, int] = (15, 10)):
+        """Comprehensive training progress visualization."""
         if not VISUALIZATION_AVAILABLE or not self.training_history:
             return None
-        # … identical implementation to original …
-        pass
+            
+        fig, axes = plt.subplots(2, 3, figsize=figsize)
+        
+        steps = [h['step'] for h in self.training_history]
+        
+        # Loss components
+        total_losses = [h['total_loss'] for h in self.training_history]
+        ce_losses = [h['ce_loss'] for h in self.training_history]
+        phase_losses = [h['phase_reg_loss'] for h in self.training_history]
+        spatial_losses = [h['spatial_coherence_loss'] for h in self.training_history]
+        
+        # Plot loss evolution
+        axes[0, 0].plot(steps, total_losses, label='Total Loss', linewidth=2, color='black')
+        axes[0, 0].plot(steps, ce_losses, label='CE Loss', alpha=0.8, color='blue')
+        axes[0, 0].plot(steps, phase_losses, label='Phase Reg', alpha=0.8, color='red')
+        axes[0, 0].plot(steps, spatial_losses, label='Spatial Coherence', alpha=0.8, color='green')
+        axes[0, 0].set_title('Training Loss Components')
+        axes[0, 0].set_xlabel('Training Step')
+        axes[0, 0].set_ylabel('Loss')
+        axes[0, 0].legend()
+        axes[0, 0].set_yscale('log')
+        
+        # Loss ratios
+        phase_ratios = [h['phase_reg_loss'] / h['total_loss'] for h in self.training_history]
+        spatial_ratios = [h['spatial_coherence_loss'] / h['total_loss'] for h in self.training_history]
+        
+        axes[0, 1].plot(steps, phase_ratios, label='Phase Reg Ratio', color='red')
+        axes[0, 1].plot(steps, spatial_ratios, label='Spatial Coherence Ratio', color='green')
+        axes[0, 1].set_title('Regularization Contribution')
+        axes[0, 1].set_xlabel('Training Step')
+        axes[0, 1].set_ylabel('Ratio of Total Loss')
+        axes[0, 1].legend()
+        
+        # Synchronization evolution
+        if self.visualizer and self.visualizer.state_history:
+            sync_data = []
+            sync_steps = []
+            
+            for record in self.visualizer.state_history:
+                sync_metrics = record['sync_metrics']
+                avg_sync = np.mean([
+                    sync_list[-1] if sync_list else 0.0 
+                    for sync_list in sync_metrics.values()
+                ])
+                sync_data.append(avg_sync)
+                sync_steps.append(record['step'])
+            
+            axes[0, 2].plot(sync_steps, sync_data, 'purple', linewidth=2)
+            axes[0, 2].set_title('Average Synchronization')
+            axes[0, 2].set_xlabel('Training Step')
+            axes[0, 2].set_ylabel('Order Parameter')
+            axes[0, 2].set_ylim(0, 1)
+        
+        # Loss smoothing (moving average)
+        window = min(50, len(steps) // 10) if len(steps) > 20 else 5
+        if len(total_losses) >= window:
+            smoothed_loss = np.convolve(total_losses, np.ones(window)/window, mode='valid')
+            smooth_steps = steps[window-1:]
+            axes[1, 0].plot(smooth_steps, smoothed_loss, 'black', linewidth=2)
+            axes[1, 0].set_title(f'Smoothed Total Loss (window={window})')
+            axes[1, 0].set_xlabel('Training Step')
+            axes[1, 0].set_ylabel('Loss')
+            axes[1, 0].set_yscale('log')
+        
+        # Gradient of loss (learning rate effectiveness)
+        if len(total_losses) > 1:
+            loss_grad = np.gradient(total_losses)
+            axes[1, 1].plot(steps, loss_grad, 'orange', alpha=0.7)
+            axes[1, 1].set_title('Loss Gradient (Learning Progress)')
+            axes[1, 1].set_xlabel('Training Step')
+            axes[1, 1].set_ylabel('Loss Gradient')
+            axes[1, 1].axhline(y=0, color='black', linestyle='--', alpha=0.5)
+        
+        # Training efficiency (loss reduction per step)
+        if len(total_losses) > 10:
+            initial_loss = np.mean(total_losses[:5])
+            efficiency = [(initial_loss - loss) / initial_loss for loss in total_losses]
+            axes[1, 2].plot(steps, efficiency, 'teal', linewidth=2)
+            axes[1, 2].set_title('Training Efficiency')
+            axes[1, 2].set_xlabel('Training Step')
+            axes[1, 2].set_ylabel('Relative Loss Reduction')
+            axes[1, 2].axhline(y=0, color='black', linestyle='--', alpha=0.5)
+        
+        plt.tight_layout()
+        return fig
 
 # --------------------------------------------------------------------------- #
 #  Dataset helpers
@@ -850,14 +930,14 @@ class CopyReverseDataset:
 def run_comprehensive_demo():
     set_seed(42)
     print("=" * 80)
-    print("Lattice Oscillator Transformer – Bug-fixed Revision 1.0")
+    print("Lattice Oscillator Transformer")
     print("=" * 80)
 
     config = dict(
-        vocab_size=100,
+        vocab_size=1000,
         d_model=132,
         n_heads=6,
-        n_layers=2,
+        n_layers=4,
         d_ff=512,
         max_seq_len=64,
         lattice_shape=(2, 3),
@@ -867,58 +947,161 @@ def run_comprehensive_demo():
     model = LatticeTransformer(**config)
     model.enable_research_mode()
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"✓ Model built – {total_params:,} parameters")
+    print(f"✓ Model built - {total_params:,} parameters")
+    print(f"✓ Research mode enabled for comprehensive monitoring")
 
     visualizer = LatticeVisualizer(model)
     trainer = LatticeTrainer(model, visualizer)
+    print(f"✓ Visualization and training tools initialized")
 
+    # Create datasets with different patterns
+    print(f"\n2. Creating Test Datasets...")
     datasets = {
         name: SimpleSequenceDataset(config["vocab_size"], 32, 200, name)
         for name in ("periodic", "hierarchical", "random")
     }
+    for name, dataset in datasets.items():
+        print(f"✓ {name.capitalize()} dataset: {len(dataset)} samples")
 
     dataloader = create_dataloader(datasets["periodic"], batch_size=16)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
 
-    print("\nQuick adaptive training (3 epochs on 10 mini-batches) …")
+     # Comparative training test
+    print(f"\n3. Running Comparative Training Test...")
+
+    print("\nQuick adaptive training (3 epochs on 10 mini-batches; should promote synchronization)...")
     epoch_results = trainer.adaptive_training_schedule(
         dataloader[:10], optimizer, n_epochs=3, warmup_epochs=1, verbose=True
     )
+    print(f"\n✓ Training complete – {len(epoch_results)} epochs recorded")
+    print(f"✓ Lattice states and metrics recorded at each training step")
+    print(f"✓ Training history contains {len(trainer.training_history)} entries")
+    print(f"✓ Visualizer has {len(visualizer.state_history)} recorded states")
+    print(f"✓ Visualizer has {len(visualizer.loss_history)} recorded loss entries")
+    assert len(visualizer.state_history) == len(trainer.training_history), "State history length mismatch"
+    assert len(visualizer.loss_history) == len(trainer.training_history), "Loss history length mismatch"
+    assert all('step' in entry for entry in trainer.training_history), "Training history missing 'step' key"
+    assert all('step' in entry for entry in visualizer.loss_history), "Loss history missing 'step' key"
+    assert all('lattice_states' in state for state in visualizer.state_history), "State history missing 'lattice_states' key"
+    assert all('sync_metrics' in state for state in visualizer.state_history), "State history missing 'sync_metrics' key"
+    print(f"✓ All data integrity checks passed")
 
+    print(f"\n4. Analyzing Results...")
+    
     print("\nFinal lattice snapshot:")
     for idx, state in enumerate(model.get_lattice_states()):
         print(f"  Block {idx}: phase-std={state['phases'].std():.3f} "
-              f"sync-order={np.abs(np.mean(np.exp(1j * state['phases']))):.3f}")
+              f"sync-order={np.abs(np.mean(np.exp(1j * state['phases']))):.3f} "
+              f"coupling-mean={state['couplings'].mean():.3f}")
+    
+    # Synchronization measure
+    print(f"\nLattice Synchronization Metrics:")
+    for block_idx, state in enumerate(model.get_lattice_states()):
+        phases = state['phases']
+        complex_phases = np.exp(1j * phases)
+        sync_order = np.abs(np.mean(complex_phases))
+        print(f"  Block {block_idx}: sync-order={sync_order:.3f} phase-std={phases.std():.3f}") 
 
-    # Speed comparison
-    sample = torch.randint(0, config["vocab_size"], (4, 32))
+    # Performance comparison
+    print(f"\n5. Performance Analysis...")
+    
+    # Test both modes
+    sample_input = torch.randint(0, config['vocab_size'], (4, 32))
+    
+    # With lattice dynamics
+    start_time = time.time()
     with torch.no_grad():
-        t0 = time.time()
-        _ = model(sample, use_lattice_dynamics=True)
-        t_lat = time.time() - t0
+        output_lattice = model(sample_input, use_lattice_dynamics=True)
+    lattice_time = time.time() - start_time
+    
+    # Without lattice dynamics (SDPA fallback)
+    start_time = time.time()
+    with torch.no_grad():
+        output_standard = model(sample_input, use_lattice_dynamics=False)
+    standard_time = time.time() - start_time
+    
+    print(f"  Lattice dynamics: {lattice_time*1000:.2f}ms")
+    print(f"  Standard attention: {standard_time*1000:.2f}ms")
+    print(f"  Overhead: {(lattice_time/standard_time - 1)*100:.1f}%")
+    
+    # Visualization demonstration
+    if VISUALIZATION_AVAILABLE:
+        print(f"\n6. Generating Visualizations...")
+        try:
 
-        t0 = time.time()
-        _ = model(sample, use_lattice_dynamics=False)
-        t_std = time.time() - t0
-    print(f"\nSpeed: lattice={t_lat*1000:.2f}ms  standard={t_std*1000:.2f}ms  overhead={(t_lat/t_std-1)*100:.1f}%")
+            # Lattice state snapshot
+            fig1 = visualizer.plot_lattice_snapshot()
+            if fig1:
+                f1 = plt.figure(fig1.number)
+                print(f"✓ Lattice state visualization created")
+
+            # Synchronization evolution
+            fig2 = visualizer.plot_synchronization_evolution()
+            if fig2:
+                f2 = plt.figure(fig2.number)
+                print(f"✓ Synchronization evolution plot created")
+            
+            # Training progress
+            fig3 = trainer.plot_training_progress()
+            if fig3:
+                f3 = plt.figure(fig3.number)
+                print(f"✓ Training progress visualization created")
+
+            # Phase animation
+            anim = visualizer.create_phase_animation(block_idx=0, interval=300)
+            if anim:
+                anim.save('phase_animation.gif')
+                print(f"✓ Phase animation created") 
+
+            plt.show()
+                    
+        except Exception as e:
+            print(f"Visualization error: {e}")
+    else:
+        print(f"\n6. Visualizations unavailable (install matplotlib)")
+
 
     print("\n" + "=" * 80)
-    print("Demo complete – all errors corrected.")
+    print("Demo complete.")
     print("=" * 80)
     return model, visualizer, trainer
 
 # --------------------------------------------------------------------------- #
-#  Quick sanity check auto-run
+#  Phase wave test
+#  When the white line shows a clear π-phase slip and test exact-match ≥ 98 %,
+#  the lattice is doing useful work.
 # --------------------------------------------------------------------------- #
-if __name__ == "__main__":
-    print("Running sanity check…")
+def run_phase_wave_test():
+    print("Running phase wave test...")
     set_seed(42)
-    model = LatticeTransformer(vocab_size=100, d_model=66, n_heads=6, n_layers=2, d_ff=256)
+    model = LatticeTransformer(vocab_size=1000, d_model=132, n_heads=6, n_layers=4, d_ff=512)
+    model.enable_research_mode()
+    viz  = LatticeVisualizer(model)
+    trainer= LatticeTrainer(model, viz)
+    data = create_dataloader(CopyReverseDataset(), batch_size=32)
+    opt  = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    trainer.adaptive_training_schedule(data, opt, n_epochs=10)
+    viz.plot_delimiter_wave(step_delim=500)
+
+
+# --------------------------------------------------------------------------- #
+#  Quick sanity check
+# --------------------------------------------------------------------------- #
+def run_sanity_check():
+    print("Running sanity check...")
+    set_seed(42)
+    model = LatticeTransformer(vocab_size=100, d_model=132, n_heads=6, n_layers=2, d_ff=256)
     x = torch.randint(0, 100, (4, 20))
     logits_l, loss_l = model(x, labels=x, use_lattice_dynamics=True)
     logits_s, loss_s = model(x, labels=x, use_lattice_dynamics=False)
     print(f"✓ Lattice loss: {loss_l.item():.4f}  Standard loss: {loss_s.item():.4f}")
-    print("All checks passed – run run_comprehensive_demo() for full demonstration.")
+    
 
-    # Uncomment for full demo:
-    # run_comprehensive_demo()
+# Uncomment for quick sanity check:
+# run_sanity_check()
+
+# Uncomment for phase wave test:
+# run_phase_wave_test()
+
+# Uncomment for full demo (may take several minutes):
+# run_comprehensive_demo()
