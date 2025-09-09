@@ -582,11 +582,17 @@ class LatticeVisualizer:
                            interval=interval, repeat=True)
         return anim
 
-    # used in delimiter task demo
+    # used in research to highlight delimiter effects
     # plots phases of all heads over time with delimiter step marked
-    def plot_delimiter_wave(self, step_delim, block_idx=0):
-        states = [s for s in self.state_history if s['step'] >= step_delim-10
-                                            and s['step'] <= step_delim+10]
+    def plot_delimiter_wave(self, step_delim, window=10, block_idx=0):
+        if not self.state_history:
+            print("No states recorded; call record_state() during training.")
+            return None
+        states = [s for s in self.state_history
+                if abs(s['step'] - step_delim) <= window]
+        if not states:                       # fall back to nearest
+            states = [min(self.state_history,
+                        key=lambda s: abs(s['step'] - step_delim))]
         phases = np.stack([s['lattice_states'][block_idx]['phases'] for s in states])
         plt.imshow(phases, aspect='auto', cmap='hsv', vmin=0, vmax=2*np.pi)
         plt.axhline(10, color='white', lw=2)   # delimiter row
@@ -1067,9 +1073,14 @@ def run_comprehensive_demo():
     return model, visualizer, trainer
 
 # --------------------------------------------------------------------------- #
-#  Phase wave test
-#  When the white line shows a clear π-phase slip and test exact-match ≥ 98 %,
-#  the lattice is doing useful work.
+#  When the white line shows a clear π-phase slip and test exact-match ≥ 98%,
+#  the lattice is doing useful work. In other words, the phase wave is
+#  successfully propagating the delimiter information to the output. An "exact
+#  match" means the entire output sequence is correct. An exact match of 98%
+#  means that 98% of all sequences in the test set were copied/reversed
+#  perfectly. A 'π-phase slip" means that the phases of the oscillators jump by
+#  π (i.e. flip direction) at the delimiter position, indicating that the
+#  delimiter has been detected and is influencing the lattice dynamics.
 # --------------------------------------------------------------------------- #
 def run_phase_wave_test():
     print("Running phase wave test...")
@@ -1081,8 +1092,7 @@ def run_phase_wave_test():
     data = create_dataloader(CopyReverseDataset(), batch_size=32)
     opt  = torch.optim.AdamW(model.parameters(), lr=3e-4)
     trainer.adaptive_training_schedule(data, opt, n_epochs=10)
-    viz.plot_delimiter_wave(step_delim=500)
-
+    viz.plot_delimiter_wave(step_delim=100)
 
 # --------------------------------------------------------------------------- #
 #  Quick sanity check
@@ -1090,13 +1100,12 @@ def run_phase_wave_test():
 def run_sanity_check():
     print("Running sanity check...")
     set_seed(42)
-    model = LatticeTransformer(vocab_size=100, d_model=132, n_heads=6, n_layers=2, d_ff=256)
+    model = LatticeTransformer(vocab_size=1000, d_model=132, n_heads=6, n_layers=4, d_ff=512)
     x = torch.randint(0, 100, (4, 20))
     logits_l, loss_l = model(x, labels=x, use_lattice_dynamics=True)
     logits_s, loss_s = model(x, labels=x, use_lattice_dynamics=False)
     print(f"✓ Lattice loss: {loss_l.item():.4f}  Standard loss: {loss_s.item():.4f}")
     
-
 # Uncomment for quick sanity check:
 # run_sanity_check()
 
