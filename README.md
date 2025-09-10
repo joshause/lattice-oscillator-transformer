@@ -1,3 +1,5 @@
+## UPDATE: The Lattice Oscillator Transformer project has evolved into a more comprehensive and robust solution at [github.com/joshause/lot](https://github.com/joshause/lot).
+
 # Lattice Oscillator Transformer
 This dynamic, multi-head, synchronized phase attention Transformer extension is a fusion of ideas from condensed matter physics, neuroscience, and machine learning that incorporates the collective dynamics of coupled oscillators and phase coherence into the transformer neural network architecture.
 
